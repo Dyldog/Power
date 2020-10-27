@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AVFoundation
+import UserNotifications
 
 extension Date {
     func timeSince(_ date: Date) -> (minutes: Int, seconds: Int) {
@@ -17,15 +18,12 @@ extension Date {
     }
 }
 
-class ViewModel: ObservableObject {
-    private let totalDrinks: Int = 60
-    
+struct PowerData {
     let startDate: Date
+    let totalDrinks: Int
     
-    @Published var backgroundColor: UIColor = .niceRandomColor()
-    var lastMins: Int
-    @Published var clock: Int = 0
-    
+    var completedMinutes: Int { Date().timeSince(startDate).minutes }
+    var isEnded: Bool { completedMinutes >= totalDrinks }
     
     var totalTime: String {
         let timeSince = Date().timeSince(startDate)
@@ -41,36 +39,80 @@ class ViewModel: ObservableObject {
         let timeSince = Date().timeSince(startDate)
         return "\(60 - timeSince.seconds)"
     }
+}
+
+class ViewModel: ObservableObject {
+    enum State {
+        case showWarning
+        case beforeStart
+        case started(Date, Int, Int)
+        case ended
+    }
+    
+    private let totalDrinks: Int = 60
+    private var player: AVAudioPlayer?
+    
+    @Published var backgroundColor: UIColor = .niceRandomColor()
+    @Published var clock: Int = 0
+    
+    var state: State = .showWarning {
+        didSet { backgroundColor = .niceRandomColor() }
+    }
+    
     
     init() {
+        var id = UIBackgroundTaskIdentifier.invalid
+        id = UIApplication.shared.beginBackgroundTask(expirationHandler: {
+            UIApplication.shared.endBackgroundTask(id)
+        })
+    }
+    func didTapWarning() {
+        UserDefaults.standard.setValue(nil, forKey: "DATE")
         if let savedDate = UserDefaults.standard.value(forKey: "DATE") as? Date {
-            startDate = savedDate
+            start(date: savedDate)
         } else {
-            startDate = Date()
-            UserDefaults.standard.setValue(startDate, forKey: "DATE")
+            state = .beforeStart
         }
         
-        let timeSince = Date().timeSince(startDate)
-        lastMins = timeSince.minutes
-        
+        let notificationCenter = UNUserNotificationCenter.current()
+        let options: UNAuthorizationOptions = [.alert, .sound, .badge]
+        notificationCenter.requestAuthorization(options: options) {
+            (didAllow, error) in
+            if !didAllow {
+                print("User has declined notifications")
+            }
+        }
+    }
+    
+    func start(date: Date = Date()) {
+        UserDefaults.standard.setValue(date, forKey: "DATE")
+        backgroundColor = .niceRandomColor()
+        state = .started(date, totalDrinks, -1)
+        timer()
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true, block: { _ in self.timer() })
-        playSound()
     }
     
     func timer() {
-        let timeSince = Date().timeSince(startDate)
-        if timeSince.minutes != lastMins {
-            backgroundColor = .niceRandomColor()
-            lastMins = timeSince.minutes
-            playSound()
-        }
+        guard case let .started(date, drinks, lastUpdate) = state else { return }
+        let currentData = PowerData(startDate: date, totalDrinks: drinks)
         
-        clock += 1
+        if currentData.isEnded {
+            state = .ended
+            UserDefaults.standard.setValue(nil, forKey: "DATE")
+            playSound(currentData)
+            UIApplication.shared.applicationIconBadgeNumber = 0
+        } else if currentData.completedMinutes != lastUpdate {
+            playSound(currentData)
+            state = .started(date, totalDrinks, currentData.completedMinutes)
+            UIApplication.shared.applicationIconBadgeNumber = Int(currentData.drinksRemaining)! 
+        } else {
+            clock += 1
+        }
     }
 
-    var player: AVAudioPlayer?
+    
 
-    func playSound() {
+    private func playSound(_ data: PowerData) {
         guard let url = Bundle.main.url(forResource: "sound", withExtension: "mp3") else { return }
 
         do {
@@ -91,37 +133,98 @@ class ViewModel: ObservableObject {
         } catch let error {
             print(error.localizedDescription)
         }
+        
+        scheduleNotification(data: data)
+    }
+    
+    func scheduleNotification(data: PowerData) {
+        let content = UNMutableNotificationContent()
+        content.title = "Drink!"
+        content.body = "\(data.drinksRemaining) drinks to go"
+        content.sound = UNNotificationSound.defaultCritical //.init(named: "sound")
+        content.badge = Int(data.drinksRemaining)! as NSNumber
+        
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        
+        let request = UNNotificationRequest(identifier: "NOTIFICATION", content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request)
+         
     }
 }
 
+extension Button {
+    func styled() -> some View {
+        return self
+            .background(Color.black)
+            .cornerRadius(10)
+            .padding()
+    }
+}
 struct ContentView: View {
     @ObservedObject var viewModel: ViewModel = .init()
     
     var body: some View {
         ZStack {
-            Color(viewModel.backgroundColor).ignoresSafeArea()
-            VStack(spacing: 20) {
-                VStack {
-                    Text("Total Time")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text(viewModel.totalTime)
+            let mainColor = Color(viewModel.backgroundColor)
+            mainColor.ignoresSafeArea()
+            switch viewModel.state {
+            case .showWarning:
+                Button(action: { viewModel.didTapWarning() }) {
+                    Text("Please drink responsibly and do not use alcohol in excess")
                         .font(.title)
-                }
-                VStack {
-                    Text("Time To Next Drink")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text(viewModel.timeToNextDrink)
-                        .font(.system(size: 128))
-                }
-                VStack {
-                    Text("Drinks Remaining")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Text(viewModel.drinksRemaining)
+                        .foregroundColor(mainColor)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }.styled()
+            case .beforeStart:
+                Button(action: { viewModel.start() }) {
+                    Text("Start")
                         .font(.title)
+                        .foregroundColor(mainColor)
+                        .padding()
+                }.styled()
+            case let .started(startDate, drinks, _):
+                let model = PowerData(startDate: startDate, totalDrinks: drinks)
+                HStack {
+                    VStack(spacing: 20) {
+                        VStack {
+                            Text("Total Time")
+                                .font(.subheadline)
+                                .foregroundColor(mainColor)
+                            Text(model.totalTime)
+                                .font(.title)
+                                .foregroundColor(mainColor)
+                        }
+                        VStack {
+                            Text("Time To Next Drink")
+                                .font(.subheadline)
+                                .foregroundColor(mainColor)
+                            Text(model.timeToNextDrink)
+                                .font(.system(size: 128))
+                                .foregroundColor(mainColor)
+                        }
+                        VStack {
+                            Text("Drinks Remaining")
+                                .font(.subheadline)
+                                .foregroundColor(mainColor)
+                            Text(model.drinksRemaining)
+                                .font(.title)
+                                .foregroundColor(mainColor)
+                        }
+                    }
+                    .frame(width: 200)
+                    .padding()
+                    .background(Color.black)
+                    .cornerRadius(10)
                 }
+                
+            case .ended:
+                Button(action: { viewModel.start() }) {
+                    Text("Restart")
+                        .font(.title)
+                        .foregroundColor(mainColor)
+                        .padding()
+                }.styled()
             }
         }
     }
