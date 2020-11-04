@@ -170,7 +170,7 @@ struct ContentView: View {
             switch viewModel.state {
             case .showWarning:
                 Button(action: { viewModel.didTapWarning() }) {
-                    Text("Please drink responsibly and do not use alcohol in excess")
+                    Text("Please eat responsibly and do not use food in excess")
                         .font(.title)
                         .foregroundColor(mainColor)
                         .multilineTextAlignment(.center)
@@ -196,7 +196,7 @@ struct ContentView: View {
                                 .foregroundColor(mainColor)
                         }
                         VStack {
-                            Text("Time To Next Drink")
+                            Text("Time To Next Bite")
                                 .font(.subheadline)
                                 .foregroundColor(mainColor)
                             Text(model.timeToNextDrink)
@@ -204,7 +204,7 @@ struct ContentView: View {
                                 .foregroundColor(mainColor)
                         }
                         VStack {
-                            Text("Drinks Remaining")
+                            Text("Bite Remaining")
                                 .font(.subheadline)
                                 .foregroundColor(mainColor)
                             Text(model.drinksRemaining)
